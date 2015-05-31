@@ -20,6 +20,7 @@
 #ifndef LVFS_BITS_TORRENTFILE_H_
 #define LVFS_BITS_TORRENTFILE_H_
 
+#include <efc/ScopedPointer>
 #include <lvfs/IDirectory>
 
 
@@ -30,6 +31,7 @@ class PLATFORM_MAKE_PRIVATE TorrentFile : public ExtendsBy<IDirectory>
 {
 public:
     TorrentFile(const Interface::Holder &file);
+    virtual ~TorrentFile();
 
 public: /* IDirectory */
     virtual const_iterator begin() const;
@@ -43,6 +45,22 @@ public: /* IDirectory */
     virtual bool remove(const Interface::Holder &file);
 
     virtual const Error &lastError() const;
+
+private:
+    void parseFile(char *buffer, int len);
+
+private:
+    class PLATFORM_MAKE_PRIVATE Item;
+    class PLATFORM_MAKE_PRIVATE List;
+    class PLATFORM_MAKE_PRIVATE String;
+    class PLATFORM_MAKE_PRIVATE Integer;
+    class PLATFORM_MAKE_PRIVATE Pair;
+    class PLATFORM_MAKE_PRIVATE Dictionary;
+
+    struct Deleter { void operator()(Item *item) const; };
+    EFC::ScopedPointer<Item, Deleter> m_item;
+
+    void test(Item *item, int pad) const;
 
 private:
     Error m_lastError;
