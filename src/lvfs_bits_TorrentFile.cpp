@@ -184,7 +184,8 @@ TorrentFile::const_iterator TorrentFile::begin() const
         }
 
 
-    test(m_item.get(), 0);
+    if (m_item.get() != NULL)
+        test(m_item.get(), 0);
 
     return const_iterator();
 }
@@ -557,7 +558,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             }
                         }
                         else
-                            if (*p1 != '-' && (*p1 < '1' || *p1 > '9'))
+                            if (*p1 != '-' && (*p1 < '1' || *p1 > '9') && (len < 2 || *p1 != '0' || p1[1] != 'e'))
                             {
                                 while (item->parent())
                                     item = item->parent();
