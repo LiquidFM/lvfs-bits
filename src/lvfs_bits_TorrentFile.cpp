@@ -18,6 +18,7 @@
  */
 
 #include "lvfs_bits_TorrentFile.h"
+#include "manager/lvfs_bits_sha1.h"
 
 #include <lvfs/IProperties>
 
@@ -88,6 +89,9 @@ private:
 class PLATFORM_MAKE_PRIVATE TorrentFile::List : public Item
 {
 public:
+    typedef EFC::List<EFC::ScopedPointer<Item>> Container;
+
+public:
     List(Item *parent) :
         Item(parent)
     {}
@@ -95,13 +99,13 @@ public:
     virtual ~List()
     {}
 
-    inline const EFC::List<EFC::ScopedPointer<Item>> &items() const { return m_items; }
+    inline const Container &items() const { return m_items; }
     inline bool add(Item *item) { return m_items.push_back(EFC::ScopedPointer<Item>(item)); }
 
     virtual Type type() const { return ListType; }
 
 private:
-    EFC::List<EFC::ScopedPointer<Item>> m_items;
+    Container m_items;
 };
 
 class PLATFORM_MAKE_PRIVATE TorrentFile::Dictionary : public List
@@ -176,16 +180,18 @@ TorrentFile::const_iterator TorrentFile::begin() const
 
             if (LIKELY(buffer != NULL))
             {
+                char info_hash[20];
+                EFC::ScopedPointer<Item> item;
+
                 if (fp->as<IFile>()->read(buffer, len) == len)
-                    const_cast<TorrentFile *>(this)->parseFile(buffer, len);
+                    item.reset(parseFile(buffer, len, info_hash));
 
                 delete [] buffer;
+
+                if (item != NULL && item->type() == Item::DictionaryType)
+                    const_cast<TorrentFile *>(this)->processFile(static_cast<Dictionary *>(item.get()));
             }
         }
-
-
-    if (m_item.get() != NULL)
-        test(m_item.get(), 0);
 
     return const_iterator();
 }
@@ -225,11 +231,12 @@ const Error &TorrentFile::lastError() const
     return m_lastError;
 }
 
-void TorrentFile::parseFile(char *buffer, int len)
+TorrentFile::Item *TorrentFile::parseFile(char *buffer, int len, char *info_hash) const
 {
     Item *item = NULL;
     Pair *pair2;
     int str_len;
+    const char *info_hash_begin = NULL;
 
     int ignore_e = 0; /* XXX: It is needed to join embedded lists (with 'll' prefix). */
 
@@ -243,7 +250,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                     item = new (std::nothrow) Dictionary(item);
 
                     if (UNLIKELY(item == NULL))
-                        return;
+                        return NULL;
                 }
                 else if (item->type() == Item::PairType && static_cast<Pair *>(item)->key())
                 {
@@ -255,7 +262,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             item = item->parent();
 
                         delete item;
-                        return;
+                        return NULL;
                     }
 
                     static_cast<Pair *>(item)->setValue(dictionary.get());
@@ -271,7 +278,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             item = item->parent();
 
                         delete item;
-                        return;
+                        return NULL;
                     }
 
                     if (UNLIKELY(static_cast<List *>(item)->add(dictionary.get()) == false))
@@ -280,7 +287,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             item = item->parent();
 
                         delete item;
-                        return;
+                        return NULL;
                     }
 
                     item = dictionary.release();
@@ -291,7 +298,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                         item = item->parent();
 
                     delete item;
-                    return;
+                    return NULL;
                 }
 
 
@@ -303,7 +310,7 @@ void TorrentFile::parseFile(char *buffer, int len)
             case 'l':
             {
                 if (item == NULL)
-                    return;
+                    return NULL;
                 else if (item->type() == Item::PairType && static_cast<Pair *>(item)->key())
                 {
                     EFC::ScopedPointer<Item> list(new (std::nothrow) List(item));
@@ -314,7 +321,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             item = item->parent();
 
                         delete item;
-                        return;
+                        return NULL;
                     }
 
                     static_cast<Pair *>(item)->setValue(list.get());
@@ -328,7 +335,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                         item = item->parent();
 
                     delete item;
-                    return;
+                    return NULL;
                 }
 
                 ++p1;
@@ -339,7 +346,7 @@ void TorrentFile::parseFile(char *buffer, int len)
             case 'e':
             {
                 if (item == NULL)
-                    return;
+                    return NULL;
 
                 if (item->type() == Item::IntegerType)
                 {
@@ -360,7 +367,29 @@ void TorrentFile::parseFile(char *buffer, int len)
                     else
                         if (item->parent())
                             if (item->parent()->type() == Item::PairType)
+                            {
+                                if (info_hash_begin)
+                                {
+                                    int level = 1;
+                                    Item *tmp = item->parent();
+
+                                    for (; tmp->parent(); tmp = tmp->parent(), ++level)
+                                        continue;
+
+                                    if (level == 2)
+                                    {
+                                        sha1_context ctx;
+
+                                        sha1_starts(&ctx);
+                                        sha1_update(&ctx, reinterpret_cast<const uint8 *>(info_hash_begin), p1 - info_hash_begin + 1);
+                                        sha1_finish(&ctx, reinterpret_cast<uint8 *>(info_hash));
+
+                                        info_hash_begin = NULL;
+                                    }
+                                }
+
                                 item = item->parent()->parent();
+                            }
                             else if (item->parent()->type() == Item::ListType)
                                 item = item->parent();
                             else
@@ -369,7 +398,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                     item = item->parent();
 
                                 delete item;
-                                return;
+                                return NULL;
                             }
 
                 ++p1;
@@ -380,7 +409,7 @@ void TorrentFile::parseFile(char *buffer, int len)
             default:
             {
                 if (item == NULL)
-                    return;
+                    return NULL;
 
                 switch (item->type())
                 {
@@ -394,7 +423,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         if (UNLIKELY(static_cast<Dictionary *>(item)->add(pair.get()) == false))
@@ -403,7 +432,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         EFC::ScopedPointer<Item> key;
@@ -428,7 +457,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         pair2->setKey(key.get());
@@ -460,7 +489,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         if (UNLIKELY(static_cast<List *>(item)->add(value.get()) == false))
@@ -469,7 +498,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         item = value.release();
@@ -500,7 +529,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         static_cast<Pair *>(item)->setValue(value.get());
@@ -523,7 +552,21 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 if (static_cast<Pair *>(item->parent())->value())
                                     item = item->parent()->parent();
                                 else
+                                {
+                                    if (::strcmp(static_cast<String *>(item)->value(), "info") == 0)
+                                    {
+                                        int level = 1;
+                                        Item *tmp = item->parent();
+
+                                        for (; tmp->parent(); tmp = tmp->parent(), ++level)
+                                            continue;
+
+                                        if (level == 2)
+                                            info_hash_begin = p1;
+                                    }
+
                                     item = item->parent();
+                                }
                             else
                                 item = item->parent();
                         }
@@ -538,7 +581,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                 item = item->parent();
 
                             delete item;
-                            return;
+                            return NULL;
                         }
 
                         break;
@@ -554,7 +597,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                     item = item->parent();
 
                                 delete item;
-                                return;
+                                return NULL;
                             }
                         }
                         else
@@ -564,7 +607,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                                     item = item->parent();
 
                                 delete item;
-                                return;
+                                return NULL;
                             }
 
                         ++p1;
@@ -578,7 +621,7 @@ void TorrentFile::parseFile(char *buffer, int len)
                             item = item->parent();
 
                         delete item;
-                        return;
+                        return NULL;
                     }
                 }
 
@@ -586,7 +629,87 @@ void TorrentFile::parseFile(char *buffer, int len)
             }
         }
 
-    m_item.reset(item);
+    return item;
+}
+
+void TorrentFile::processFile(Dictionary *file)
+{
+    const List *list;
+    const Pair *pair;
+
+    const Item *encoding = NULL;
+    const Item *length = NULL;
+    const Item *files = NULL;
+    const Item *name = NULL;
+
+    for (auto i = file->items().begin(), end = file->items().end(); i != end; ++i)
+        if ((*i)->type() == Item::PairType && (pair = static_cast<Pair *>((*i).get()))->key()->type() == Item::StringType)
+            if (::strcmp(static_cast<const String *>(pair->key())->value(), "encoding") == 0)
+                if (encoding == NULL)
+                    encoding = pair->value();
+                else
+                {
+                    m_item.reset();
+                    return;
+                }
+            else if (::strcmp(static_cast<const String *>(pair->key())->value(), "info") == 0)
+            {
+                if (pair->value()->type() != Item::DictionaryType || length != NULL || files != NULL || name != NULL)
+                {
+                    m_item.reset();
+                    return;
+                }
+
+                list = static_cast<const Dictionary *>(pair->value());
+
+                for (auto i = list->items().begin(), end = list->items().end(); i != end; ++i)
+                    if ((*i)->type() == Item::PairType && (pair = static_cast<Pair *>((*i).get()))->key()->type() == Item::StringType)
+                        if (::strcmp(static_cast<const String *>(pair->key())->value(), "files") == 0)
+                            if (files == NULL)
+                                files = pair->value();
+                            else
+                            {
+                                m_item.reset();
+                                return;
+                            }
+                        else if (::strcmp(static_cast<const String *>(pair->key())->value(), "length") == 0)
+                            if (length == NULL)
+                                length = pair->value();
+                            else
+                            {
+                                m_item.reset();
+                                return;
+                            }
+                        else if (::strcmp(static_cast<const String *>(pair->key())->value(), "name") == 0)
+                            if (name == NULL)
+                                name = pair->value();
+                            else
+                            {
+                                m_item.reset();
+                                return;
+                            }
+            }
+
+    if (encoding != NULL &&
+        (encoding->type() != Item::StringType ||
+         ::strcmp(static_cast<const String *>(encoding)->value(), "UTF-8") != 0))
+    {
+        m_item.reset();
+        return;
+    }
+
+    if (name == NULL || name->type() != Item::StringType)
+    {
+        m_item.reset();
+        return;
+    }
+
+    if ((length != NULL && files != NULL) || (length == NULL && files == NULL))
+    {
+        m_item.reset();
+        return;
+    }
+
 }
 
 void TorrentFile::Deleter::operator()(Item *item) const

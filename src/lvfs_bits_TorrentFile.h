@@ -20,6 +20,8 @@
 #ifndef LVFS_BITS_TORRENTFILE_H_
 #define LVFS_BITS_TORRENTFILE_H_
 
+#include <efc/Map>
+#include <efc/String>
 #include <efc/ScopedPointer>
 #include <lvfs/IDirectory>
 
@@ -47,9 +49,6 @@ public: /* IDirectory */
     virtual const Error &lastError() const;
 
 private:
-    void parseFile(char *buffer, int len);
-
-private:
     class PLATFORM_MAKE_PRIVATE Item;
     class PLATFORM_MAKE_PRIVATE List;
     class PLATFORM_MAKE_PRIVATE String;
@@ -57,6 +56,11 @@ private:
     class PLATFORM_MAKE_PRIVATE Pair;
     class PLATFORM_MAKE_PRIVATE Dictionary;
 
+private:
+    Item *parseFile(char *buffer, int len, char *info_hash) const;
+    void processFile(Dictionary *file);
+
+private:
     struct Deleter { void operator()(Item *item) const; };
     EFC::ScopedPointer<Item, Deleter> m_item;
 
