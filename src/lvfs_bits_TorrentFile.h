@@ -61,9 +61,9 @@ private:
 
 private:
     void parseFile();
-    Item *parseFile(char *buffer, int len, char *info_hash) const;
     bool processFile(const Dictionary *file);
     bool processFiles(Entries *entries, const List *files, time_t ctime);
+    Item *parseBencode(char *buffer, int len, char *info_hash) const;
 
 private:
     const Integer *m_piece_length;
