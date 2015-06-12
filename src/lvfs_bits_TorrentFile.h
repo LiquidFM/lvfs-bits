@@ -32,6 +32,9 @@ namespace BitS {
 class PLATFORM_MAKE_PRIVATE TorrentFile : public ExtendsBy<IDirectory>
 {
 public:
+    typedef EFC::Map<EFC::String, Interface::Holder> Entries;
+
+public:
     TorrentFile(const Interface::Holder &file);
     virtual ~TorrentFile();
 
@@ -40,7 +43,7 @@ public: /* IDirectory */
     virtual const_iterator end() const;
 
     virtual bool exists(const char *name) const;
-    virtual Interface::Holder entry(const char *name, const IType *type = NULL, bool create = false);
+    virtual Interface::Holder entry(const char *name, const IType *type, bool create = false);
 
     virtual bool copy(const Progress &callback, const Interface::Holder &file, bool move = false);
     virtual bool rename(const Interface::Holder &file, const char *name);
@@ -57,8 +60,20 @@ private:
     class PLATFORM_MAKE_PRIVATE Dictionary;
 
 private:
+    void parseFile();
     Item *parseFile(char *buffer, int len, char *info_hash) const;
-    void processFile(Dictionary *file);
+    bool processFile(const Dictionary *file);
+    bool processFiles(Entries *entries, const List *files, time_t ctime);
+
+private:
+    const Integer *m_piece_length;
+    const String *m_announce;
+    const String *m_comment;
+    const String *m_created_by;
+    const Integer *m_creation_date;
+    const String *m_publisher;
+    const String *m_publisher_url;
+    Entries m_entries;
 
 private:
     struct Deleter { void operator()(Item *item) const; };
