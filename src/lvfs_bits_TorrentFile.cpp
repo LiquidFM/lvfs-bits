@@ -182,7 +182,7 @@ public: /* IEntry */
     virtual const char *schema() const { return "file"; }
     virtual const char *location() const { return m_file->as<IEntry>()->location(); }
     virtual const IType *type() const { return m_type; }
-    virtual Interface::Holder open(IFile::Mode mode = IFile::Read) const { return Interface::Holder(); }
+    virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const { return Interface::Holder(); }
 
 public: /* IProperties */
     virtual off64_t size() const { return m_size; }
@@ -218,7 +218,7 @@ public: /* IEntry */
     virtual const char *schema() const { return "file"; }
     virtual const char *location() const { return m_file->as<IEntry>()->location(); }
     virtual const IType *type() const { return m_type; }
-    virtual Interface::Holder open(IFile::Mode mode = IFile::Read) const
+    virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const
     {
         m_error = Error(EISDIR);
         return Interface::Holder();
@@ -318,7 +318,7 @@ void TorrentFile::parseFile()
                 char info_hash[20];
                 EFC::ScopedPointer<Item> item;
 
-                if (fp->as<IFile>()->read(buffer, len) == len)
+                if (fp->as<IStream>()->read(buffer, len) == len)
                     item.reset(parseBencode(buffer, len, info_hash));
 
                 delete [] buffer;
