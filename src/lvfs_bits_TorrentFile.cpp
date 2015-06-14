@@ -133,6 +133,7 @@ public:
     virtual ~String()
     {}
 
+    inline const char *value(size_t index) const { return m_value.c_str() + index; };
     inline const EFC::String &value() const { return m_value; };
     inline void setValue(const char *value, int len) { m_value = EFC::String(value, len); };
 
@@ -153,34 +154,39 @@ public:
     virtual ~Integer()
     {}
 
-    inline long value() const { return m_value; };
-    inline void setValue(long value) { m_value = value; };
+    inline size_t value() const { return m_value; };
+    inline void setValue(size_t value) { m_value = value; };
 
     virtual Type type() const { return IntegerType; }
 
 private:
-    long m_value;
+    size_t m_value;
 };
 
 
 class PLATFORM_MAKE_PRIVATE Entry : public Implements<IEntry, IProperties>
 {
 public:
-    Entry(const EFC::String &title, off64_t size, time_t ctime, const Interface::Holder &file) :
-        m_title(title),
+    Entry(const char *location, off64_t size, time_t ctime, const char *pieces, const Interface::Holder &file) :
+        m_location(::strdup(location)),
+        m_title(::strrchr(m_location, '/') + 1),
         m_size(size),
         m_ctime(ctime),
+        m_pieces(pieces),
         m_file(file)
     {
-        m_type = Module::desktop().typeOfFile(title.c_str());
+        m_type = Module::desktop().typeOfFile(m_title);
     }
+
     virtual ~Entry()
-    {}
+    {
+        ::free(m_location);
+    }
 
 public: /* IEntry */
-    virtual const char *title() const { return m_title.c_str(); }
+    virtual const char *title() const { return m_title; }
     virtual const char *schema() const { return "file"; }
-    virtual const char *location() const { return m_file->as<IEntry>()->location(); }
+    virtual const char *location() const { return m_location; }
     virtual const IType *type() const { return m_type; }
     virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const { return Interface::Holder(); }
 
@@ -192,9 +198,11 @@ public: /* IProperties */
     virtual int permissions() const { return m_file->as<IProperties>()->permissions(); }
 
 private:
-    EFC::String m_title;
+    char *m_location;
+    const char *m_title;
     off64_t m_size;
     time_t m_ctime;
+    const char *m_pieces;
     Interface::Holder m_file;
     Interface::Adaptor<IType> m_type;
 };
@@ -202,21 +210,24 @@ private:
 class PLATFORM_MAKE_PRIVATE Dir : public Implements<IEntry, IDirectory>
 {
 public:
-    Dir(const EFC::String &title, const Interface::Holder &file) :
-        m_title(title),
+    Dir(const char *location, const Interface::Holder &file) :
+        m_location(::strdup(location)),
+        m_title(::strrchr(m_location, '/') + 1),
         m_file(file),
         m_type(Module::desktop().typeOfDirectory())
     {}
 
     virtual ~Dir()
-    {}
+    {
+        ::free(m_location);
+    }
 
     TorrentFile::Entries *entries() { return &m_entries; }
 
 public: /* IEntry */
-    virtual const char *title() const { return m_title.c_str(); }
+    virtual const char *title() const { return m_title; }
     virtual const char *schema() const { return "file"; }
-    virtual const char *location() const { return m_file->as<IEntry>()->location(); }
+    virtual const char *location() const { return m_location; }
     virtual const IType *type() const { return m_type; }
     virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const
     {
@@ -238,7 +249,8 @@ public: /* IDirectory */
     virtual const Error &lastError() const { return m_error; }
 
 private:
-    EFC::String m_title;
+    char *m_location;
+    const char *m_title;
     Interface::Holder m_file;
     TorrentFile::Entries m_entries;
     Interface::Adaptor<IType> m_type;
@@ -249,12 +261,14 @@ private:
 TorrentFile::TorrentFile(const Interface::Holder &file) :
     ExtendsBy(file),
     m_piece_length(NULL),
+    m_pieces(NULL),
     m_announce(NULL),
     m_comment(NULL),
     m_created_by(NULL),
     m_creation_date(NULL),
     m_publisher(NULL),
-    m_publisher_url(NULL)
+    m_publisher_url(NULL),
+    m_pieces_count(0)
 {}
 
 TorrentFile::~TorrentFile()
@@ -310,16 +324,15 @@ void TorrentFile::parseFile()
     if (fp.isValid())
         if (IProperties *prop = original()->as<IProperties>())
         {
-            int len = prop->size();
+            size_t len = prop->size();
             char *buffer = new (std::nothrow) char[len];
 
             if (LIKELY(buffer != NULL))
             {
-                char info_hash[20];
                 EFC::ScopedPointer<Item> item;
 
                 if (fp->as<IStream>()->read(buffer, len) == len)
-                    item.reset(parseBencode(buffer, len, info_hash));
+                    item.reset(parseBencode(buffer, len, m_info_hash));
 
                 delete [] buffer;
 
@@ -327,12 +340,14 @@ void TorrentFile::parseFile()
                     if (!processFile(static_cast<Dictionary *>(item.get())))
                     {
                         m_piece_length = NULL;
+                        m_pieces = NULL;
                         m_announce = NULL;
                         m_comment = NULL;
                         m_created_by = NULL;
                         m_creation_date = NULL;
                         m_publisher = NULL;
                         m_publisher_url = NULL;
+                        m_pieces_count = 0;
                         m_entries.clear();
                     }
             }
@@ -348,7 +363,6 @@ bool TorrentFile::processFile(const Dictionary *file)
     const List *files = NULL;
     const Integer *length = NULL;
     const String *name = NULL;
-    const String *pieces = NULL;
 
     for (auto i = file->items().begin(), end = file->items().end(); i != end; ++i)
         if ((*i)->type() == Item::PairType && (pair = static_cast<Pair *>((*i).get()))->key()->type() == Item::StringType)
@@ -407,8 +421,8 @@ bool TorrentFile::processFile(const Dictionary *file)
                             else
                                 return false;
                         else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "pieces") == 0)
-                            if (pieces == NULL && pair->value()->type() == Item::StringType)
-                                pieces = static_cast<const String *>(pair->value());
+                            if (m_pieces == NULL && pair->value()->type() == Item::StringType)
+                                m_pieces = static_cast<const String *>(pair->value());
                             else
                                 return false;
             }
@@ -429,10 +443,10 @@ bool TorrentFile::processFile(const Dictionary *file)
     if (m_piece_length == NULL)
         return false;
 
-    if (name == NULL)
+    if (m_pieces == NULL)
         return false;
 
-    if (pieces == NULL)
+    if (name == NULL)
         return false;
 
     if ((length != NULL && files != NULL) || (length == NULL && files == NULL))
@@ -441,9 +455,19 @@ bool TorrentFile::processFile(const Dictionary *file)
     if (encoding != NULL && ::strcmp(encoding->value().c_str(), "UTF-8") != 0)
         return false;
 
+    if (m_pieces->value().size() % 20)
+        return false;
+
+    m_pieces_count = m_pieces->value().size() / 20;
+
     if (files != NULL)
     {
-        Interface::Holder entry(new (std::nothrow) Dir(name->value(), original()));
+        char buf[Module::MaxUriLength];
+
+        if (::snprintf(buf, sizeof(buf), "/%s", name->value().c_str()) >= sizeof(buf))
+            return false;
+
+        Interface::Holder entry(new (std::nothrow) Dir(buf, original()));
 
         if (UNLIKELY(entry.isValid() == false))
             return false;
@@ -452,44 +476,48 @@ bool TorrentFile::processFile(const Dictionary *file)
 
         time_t ctime = m_creation_date != NULL ? m_creation_date->value() : original()->as<IProperties>()->cTime();
 
-        if (!processFiles(entry.as<Dir>()->entries(), files, ctime))
+        if (!processFiles(entry.as<Dir>()->entries(), files, ctime, buf))
             return false;
     }
     else
     {
-        Interface::Holder dir;
-        time_t ctime = m_creation_date != NULL ? m_creation_date->value() : original()->as<IProperties>()->cTime();
-        Interface::Holder entry(new (std::nothrow) Entry(name->value(), length->value(), ctime, original()));
+        ProcessEntryState state = {
+                m_creation_date != NULL ? m_creation_date->value() : original()->as<IProperties>()->cTime(),
+                length->value(),
+                0,
+                m_piece_length->value(),
+                &name->value()
+        };
 
-        if (UNLIKELY(entry.isValid() == false))
+        if (::snprintf(state.location, sizeof(state.location), "/%s", name->value().c_str()) >= sizeof(state.location))
             return false;
 
-        if ((dir = Module::open(entry)).isValid())
-            entry = dir;
-
-        m_entries.insert(Entries::value_type(name->value(), entry));
+        if (!processEntry(&m_entries, state))
+            return false;
     }
 
     return true;
 }
 
-bool TorrentFile::processFiles(Entries *entries, const List *files, time_t ctime)
+bool TorrentFile::processFiles(Entries *entries, const List *files, time_t ctime, const char *path_buf)
 {
     Interface::Holder entry;
-    Interface::Holder dir;
-    Entries *entries_loc;
+    Entries *local_entries;
 
     const Pair *pair;
     const Integer *length;
     const List *path;
     const String *name;
 
+    ProcessEntryState state = { ctime, 0, 0, m_piece_length->value(), NULL, { 0 } };
+
     for (auto i = files->items().begin(), end = files->items().end(); i != end; ++i)
         if ((*i)->type() == Item::DictionaryType)
         {
             length = NULL;
             path = NULL;
-            entries_loc = entries;
+            local_entries = entries;
+            ::strcpy(state.location, path_buf);
 
             for (auto q = static_cast<const Dictionary *>((*i).get())->items().begin(),
                       end = static_cast<const Dictionary *>((*i).get())->items().end();
@@ -497,82 +525,69 @@ bool TorrentFile::processFiles(Entries *entries, const List *files, time_t ctime
             {
                 if ((*q)->type() == Item::PairType && (pair = static_cast<const Pair *>((*q).get()))->key()->type() == Item::StringType)
                     if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "length") == 0)
-                        if (length == NULL)
+                        if (length == NULL && pair->value()->type() == Item::IntegerType)
                             length = static_cast<const Integer *>(pair->value());
                         else
                             return false;
                     else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "path") == 0)
-                        if (path == NULL)
+                        if (path == NULL && pair->value()->type() == Item::ListType)
                             path = static_cast<const List *>(pair->value());
                         else
                             return false;
             }
 
-            if (length == NULL || length->type() != Item::IntegerType ||
-                path == NULL || path->type() != Item::ListType ||
-                path->items().size() == 0)
+            if (length == NULL || path == NULL || path->items().size() == 0)
                 return false;
+
+            auto current_file = path->items().begin();
 
             if (path->items().size() > 1)
             {
-                auto q = path->items().begin();
                 auto end = --path->items().end();
+                char *local_buf = state.location + strlen(state.location);
 
-                for (; q != end; ++q)
+                for (; current_file != end; ++current_file)
                 {
-                    name = static_cast<const String *>((*q).get());
+                    name = static_cast<const String *>((*current_file).get());
 
                     if (name->type() != Item::StringType)
                         return false;
 
-                    Entries::iterator lb = entries_loc->lower_bound(name->value());
+                    if (::snprintf(local_buf,
+                                   sizeof(state.location) - (local_buf - state.location),
+                                   "/%s",
+                                   name->value().c_str()) >= sizeof(state.location) - (local_buf - state.location))
+                        return false;
 
-                    if (lb != entries_loc->end() && !(entries_loc->key_comp()(name->value(), lb->first)))
-                        entries_loc = lb->second.as<Dir>()->entries();
+                    local_buf += name->value().size() + 1;
+
+                    Entries::iterator lb = local_entries->lower_bound(name->value());
+
+                    if (lb != local_entries->end() && !(local_entries->key_comp()(name->value(), lb->first)))
+                        local_entries = lb->second.as<Dir>()->entries();
                     else
                     {
-                        entry.reset(new (std::nothrow) Dir(name->value(), original()));
+                        entry.reset(new (std::nothrow) Dir(state.location, original()));
 
                         if (UNLIKELY(entry.isValid() == false))
                             return false;
 
-                        entries_loc->insert(lb, Entries::value_type(name->value(), entry));
-                        entries_loc = entry.as<Dir>()->entries();
+                        local_entries->insert(lb, Entries::value_type(name->value(), entry));
+                        local_entries = entry.as<Dir>()->entries();
                     }
                 }
-
-                name = static_cast<const String *>((*end).get());
-
-                if (name->type() != Item::StringType)
-                    return false;
-
-                entry.reset(new (std::nothrow) Entry(name->value(), length->value(), ctime, original()));
-
-                if (UNLIKELY(entry.isValid() == false))
-                    return false;
-
-                if ((dir = Module::open(entry)).isValid())
-                    entry = dir;
-
-                entries_loc->insert(Entries::value_type(name->value(), entry));
             }
-            else
-            {
-                name = static_cast<const String *>((*path->items().begin()).get());
 
-                if (name->type() != Item::StringType)
-                    return false;
+            name = static_cast<const String *>((*current_file).get());
 
-                entry.reset(new (std::nothrow) Entry(name->value(), length->value(), ctime, original()));
+            if (name->type() != Item::StringType)
+                return false;
 
-                if (UNLIKELY(entry.isValid() == false))
-                    return false;
+            state.name = &name->value();
+            state.length = length->value();
 
-                if ((dir = Module::open(entry)).isValid())
-                    entry = dir;
-
-                entries_loc->insert(Entries::value_type(name->value(), entry));
-            }
+            if (!processEntry(local_entries, state))
+                return false;
         }
         else
             return false;
@@ -580,7 +595,48 @@ bool TorrentFile::processFiles(Entries *entries, const List *files, time_t ctime
     return true;
 }
 
-TorrentFile::Item *TorrentFile::parseBencode(char *buffer, int len, char *info_hash) const
+bool TorrentFile::processEntry(Entries *entries, ProcessEntryState &state)
+{
+    Interface::Holder entry;
+    Interface::Holder entry2;
+
+    size_t piece_offset = m_piece_length->value() - state.piece_length;
+
+    if (::snprintf(state.location + strlen(state.location),
+                   sizeof(state.location) - strlen(state.location),
+                   "/%s", state.name->c_str()) >= sizeof(state.location) - strlen(state.location))
+        return false;
+
+    entry.reset(new (std::nothrow) Entry(state.location, state.length, state.ctime, NULL, original()));
+
+    if (UNLIKELY(entry.isValid() == false))
+        return false;
+
+    if ((entry2 = Module::open(entry)).isValid())
+        entry = entry2;
+
+    entries->insert(Entries::value_type(*state.name, entry));
+
+    for (size_t len = state.length; len > 0;)
+        if (len >= state.piece_length)
+        {
+            ++state.index;
+            len -= state.piece_length;
+            state.piece_length = m_piece_length->value();
+        }
+        else
+        {
+            state.piece_length -= len;
+            break;
+        }
+
+    if (state.index >= m_pieces_count)
+        return false;
+
+    return true;
+}
+
+TorrentFile::Item *TorrentFile::parseBencode(char *buffer, size_t len, char *info_hash) const
 {
     Item *item = NULL;
     Pair *pair2;
@@ -700,7 +756,7 @@ TorrentFile::Item *TorrentFile::parseBencode(char *buffer, int len, char *info_h
                 if (item->type() == Item::IntegerType)
                 {
                     *p1 = 0;
-                    static_cast<Integer *>(item)->setValue(atol(p2));
+                    static_cast<Integer *>(item)->setValue(atoll(p2));
 
                     if (item->parent()->type() == Item::PairType)
                         if (static_cast<Pair *>(item->parent())->value())

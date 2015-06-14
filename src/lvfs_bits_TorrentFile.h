@@ -23,6 +23,7 @@
 #include <efc/Map>
 #include <efc/String>
 #include <efc/ScopedPointer>
+#include <lvfs/Module>
 #include <lvfs/IDirectory>
 
 
@@ -60,19 +61,33 @@ private:
     class PLATFORM_MAKE_PRIVATE Dictionary;
 
 private:
+    struct ProcessEntryState
+    {
+        time_t ctime;
+        size_t length;
+        size_t index;
+        size_t piece_length;
+        const EFC::String *name;
+        char location[Module::MaxUriLength];
+    };
+
     void parseFile();
     bool processFile(const Dictionary *file);
-    bool processFiles(Entries *entries, const List *files, time_t ctime);
-    Item *parseBencode(char *buffer, int len, char *info_hash) const;
+    bool processFiles(Entries *entries, const List *files, time_t ctime, const char *path);
+    bool processEntry(Entries *entries, ProcessEntryState &state);
+    Item *parseBencode(char *buffer, size_t len, char *info_hash) const;
 
 private:
     const Integer *m_piece_length;
+    const String *m_pieces;
     const String *m_announce;
     const String *m_comment;
     const String *m_created_by;
     const Integer *m_creation_date;
     const String *m_publisher;
     const String *m_publisher_url;
+    size_t m_pieces_count;
+    char m_info_hash[20];
     Entries m_entries;
 
 private:
