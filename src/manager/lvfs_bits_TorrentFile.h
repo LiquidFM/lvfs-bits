@@ -20,10 +20,6 @@
 #ifndef LVFS_BITS_TORRENTFILE_H_
 #define LVFS_BITS_TORRENTFILE_H_
 
-#include <efc/Map>
-#include <efc/String>
-#include <efc/ScopedPointer>
-#include <lvfs/Module>
 #include <lvfs/IDirectory>
 
 
@@ -32,9 +28,6 @@ namespace BitS {
 
 class PLATFORM_MAKE_PRIVATE TorrentFile : public ExtendsBy<IDirectory>
 {
-public:
-    typedef EFC::Map<EFC::String, Interface::Holder> Entries;
-
 public:
     TorrentFile(const Interface::Holder &file);
     virtual ~TorrentFile();
@@ -53,51 +46,8 @@ public: /* IDirectory */
     virtual const Error &lastError() const;
 
 private:
-    class PLATFORM_MAKE_PRIVATE Item;
-    class PLATFORM_MAKE_PRIVATE List;
-    class PLATFORM_MAKE_PRIVATE String;
-    class PLATFORM_MAKE_PRIVATE Integer;
-    class PLATFORM_MAKE_PRIVATE Pair;
-    class PLATFORM_MAKE_PRIVATE Dictionary;
-
-private:
-    struct ProcessEntryState
-    {
-        time_t ctime;
-        size_t length;
-        size_t index;
-        size_t piece_length;
-        const EFC::String *name;
-        char location[Module::MaxUriLength];
-    };
-
-    void parseFile();
-    bool processFile(const Dictionary *file);
-    bool processFiles(Entries *entries, const List *files, time_t ctime, const char *path);
-    bool processEntry(Entries *entries, ProcessEntryState &state);
-    Item *parseBencode(char *buffer, size_t len, char *info_hash) const;
-
-private:
-    const Integer *m_piece_length;
-    const String *m_pieces;
-    const String *m_announce;
-    const String *m_comment;
-    const String *m_created_by;
-    const Integer *m_creation_date;
-    const String *m_publisher;
-    const String *m_publisher_url;
-    size_t m_pieces_count;
-    char m_info_hash[20];
-    Entries m_entries;
-
-private:
-    struct Deleter { void operator()(Item *item) const; };
-    EFC::ScopedPointer<Item, Deleter> m_item;
-
-    void test(Item *item, int pad) const;
-
-private:
-    Error m_lastError;
+    mutable Interface::Adaptor<IDirectory> m_torrent;
+    mutable Error m_lastError;
 };
 
 }}

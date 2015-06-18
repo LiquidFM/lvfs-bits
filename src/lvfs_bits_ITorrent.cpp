@@ -1,7 +1,7 @@
 /**
  * This file is part of lvfs-bits.
  *
- * Copyright (C) 2015 Dmitriy Vilkov, <dav.daemon@gmail.com>
+ * Copyright (C) 2011-2015 Dmitriy Vilkov, <dav.daemon@gmail.com>
  *
  * lvfs-bits is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,32 +17,13 @@
  * along with lvfs-bits. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "lvfs_bits_Plugin.h"
-#include "manager/lvfs_bits_TorrentFile.h"
+#include "lvfs_bits_ITorrent.h"
 
 
 namespace LVFS {
 namespace BitS {
 
-Plugin::Plugin()
+ITorrent::~ITorrent()
 {}
-
-Plugin::~Plugin()
-{}
-
-Interface::Holder Plugin::open(const Interface::Holder &file) const
-{
-    return Interface::Holder(new (std::nothrow) TorrentFile(file));
-}
-
-const Error &Plugin::lastError() const
-{
-    return m_error;
-}
-
-void Plugin::registered()
-{
-
-}
 
 }}

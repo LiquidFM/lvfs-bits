@@ -22,4 +22,5 @@ build_version_file (lvfs-bits 0.0.1)
 add_documentation ("LVFS-BitS" 0.0.1 "LVFS Plugin for bit-torrent protocol")
 
 # Install rules
+install_header_files (lvfs-bits "src/lvfs_bits_ITorrent.h:ITorrent")
 install_target (lvfs-bits)
