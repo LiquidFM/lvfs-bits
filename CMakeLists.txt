@@ -8,6 +8,10 @@ list (APPEND ${PROJECT_NAME}_LIBS brolly)
 list (APPEND ${PROJECT_NAME}_LIBS efc)
 list (APPEND ${PROJECT_NAME}_LIBS lvfs)
 
+find_package (CURL REQUIRED)
+include_directories (${CURL_INCLUDE_DIRS})
+list (APPEND ${PROJECT_NAME}_LIBS ${CURL_LIBRARIES})
+
 # Sources
 add_subdirectory (src)
 

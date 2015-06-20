@@ -44,6 +44,7 @@ public:
     virtual const char *publisher() const = 0;
     virtual const char *publisherUrl() const = 0;
     virtual const char *hash() const = 0;
+    virtual uint64_t size() const = 0;
 };
 
 }}

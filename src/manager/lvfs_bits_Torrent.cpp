@@ -18,14 +18,14 @@
  */
 
 #include "lvfs_bits_Torrent.h"
-#include "lvfs_bits_sha1.h"
+#include "lvfs_bits_Stream.h"
+#include "lvfs_bits_Parser.h"
 
 #include <lvfs/IEntry>
 #include <lvfs/IStream>
 #include <lvfs/IProperties>
 #include <lvfs/Module>
 
-#include <efc/ScopedPointer>
 #include <brolly/assert.h>
 
 #include <cstring>
@@ -37,591 +37,15 @@ namespace BitS {
 
 namespace {
 
-    class Item
-    {
-    public:
-        enum Type
-        {
-            DictionaryType,
-            PairType,
-            ListType,
-            StringType,
-            IntegerType
-        };
-
-    public:
-        Item(Item *parent) :
-            m_parent(parent)
-        {}
-
-        virtual ~Item()
-        {}
-
-        inline Item *parent() const { return m_parent; }
-        virtual Type type() const = 0;
-
-    private:
-        Item *m_parent;
-    };
-
-    class Pair : public Item
-    {
-    public:
-        Pair(Item *parent) :
-            Item(parent)
-        {}
-
-        virtual ~Pair()
-        {}
-
-        inline const Item *key() const { return m_key.get(); }
-        inline void setKey(Item *value) { m_key.reset(value); }
-
-        inline const Item *value() const { return m_value.get(); }
-        inline void setValue(Item *value) { m_value.reset(value); }
-
-        virtual Type type() const { return PairType; }
-
-    private:
-        EFC::ScopedPointer<Item> m_key;
-        EFC::ScopedPointer<Item> m_value;
-
-    };
-
-    class List : public Item
-    {
-    public:
-        typedef EFC::List<EFC::ScopedPointer<Item>> Container;
-
-    public:
-        List(Item *parent) :
-            Item(parent)
-        {}
-
-        virtual ~List()
-        {}
-
-        inline const Container &items() const { return m_items; }
-        inline bool add(Item *item) { return m_items.push_back(EFC::ScopedPointer<Item>(item)); }
-
-        virtual Type type() const { return ListType; }
-
-    private:
-        Container m_items;
-    };
-
-    class Dictionary : public List
-    {
-    public:
-        Dictionary(Item *parent) :
-            List(parent)
-        {}
-
-        virtual ~Dictionary()
-        {}
-
-        virtual Type type() const { return DictionaryType; }
-    };
-
-    class String : public Item
-    {
-    public:
-        String(Item *parent) :
-            Item(parent)
-        {}
-
-        virtual ~String()
-        {}
-
-        inline const char *value(size_t index) const { return m_value.c_str() + index; };
-        inline const EFC::String &value() const { return m_value; };
-        inline void setValue(const char *value, int len) { m_value = EFC::String(value, len); };
-
-        virtual Type type() const { return StringType; }
-
-    private:
-        EFC::String m_value;
-    };
-
-    class Integer : public Item
-    {
-    public:
-        Integer(Item *parent) :
-            Item(parent),
-            m_sign(1),
-            m_value(0)
-        {}
-
-        virtual ~Integer()
-        {}
-
-        inline uint64_t value() const { return m_value; };
-        inline void setValue(uint64_t value) { m_value = value; };
-
-        inline int sign() const { return m_sign; };
-        inline void setSign(int sign) { m_sign = sign; };
-
-        virtual Type type() const { return IntegerType; }
-
-    private:
-        int m_sign;
-        uint64_t m_value;
-    };
-
-
-    static Item *parseBencode(char *buffer, size_t len, char *info_hash)
-    {
-        Item *item = NULL;
-        Pair *pair2;
-        int str_len;
-        const char *info_hash_begin = NULL;
-
-        int ignore_e = 0; /* XXX: It is needed to join embedded lists (with 'll' prefix). */
-
-        for (char *p2, *p1 = buffer; len > 0;)
-            switch (*p1)
-            {
-                case 'd':
-                {
-                    if (item == NULL)
-                    {
-                        item = new (std::nothrow) Dictionary(item);
-
-                        if (UNLIKELY(item == NULL))
-                            return NULL;
-                    }
-                    else if (item->type() == Item::PairType && static_cast<Pair *>(item)->key())
-                    {
-                        EFC::ScopedPointer<Item> dictionary(new (std::nothrow) Dictionary(item));
-
-                        if (UNLIKELY(dictionary.get() == NULL))
-                        {
-                            while (item->parent())
-                                item = item->parent();
-
-                            delete item;
-                            return NULL;
-                        }
-
-                        static_cast<Pair *>(item)->setValue(dictionary.get());
-                        item = dictionary.release();
-                    }
-                    else if (item->type() == Item::ListType)
-                    {
-                        EFC::ScopedPointer<Item> dictionary(new (std::nothrow) Dictionary(item));
-
-                        if (UNLIKELY(dictionary.get() == NULL))
-                        {
-                            while (item->parent())
-                                item = item->parent();
-
-                            delete item;
-                            return NULL;
-                        }
-
-                        if (UNLIKELY(static_cast<List *>(item)->add(dictionary.get()) == false))
-                        {
-                            while (item->parent())
-                                item = item->parent();
-
-                            delete item;
-                            return NULL;
-                        }
-
-                        item = dictionary.release();
-                    }
-                    else
-                    {
-                        while (item->parent())
-                            item = item->parent();
-
-                        delete item;
-                        return NULL;
-                    }
-
-
-                    ++p1;
-                    --len;
-                    break;
-                }
-
-                case 'l':
-                {
-                    if (item == NULL)
-                        return NULL;
-                    else if (item->type() == Item::PairType && static_cast<Pair *>(item)->key())
-                    {
-                        EFC::ScopedPointer<Item> list(new (std::nothrow) List(item));
-
-                        if (UNLIKELY(list.get() == NULL))
-                        {
-                            while (item->parent())
-                                item = item->parent();
-
-                            delete item;
-                            return NULL;
-                        }
-
-                        static_cast<Pair *>(item)->setValue(list.get());
-                        item = list.release();
-                    }
-                    else if (item->type() == Item::ListType)
-                        ++ignore_e;
-                    else
-                    {
-                        while (item->parent())
-                            item = item->parent();
-
-                        delete item;
-                        return NULL;
-                    }
-
-                    ++p1;
-                    --len;
-                    break;
-                }
-
-                case 'e':
-                {
-                    if (item == NULL)
-                        return NULL;
-
-                    if (item->type() == Item::IntegerType)
-                    {
-                        *p1 = 0;
-                        static_cast<Integer *>(item)->setValue(atoll(p2));
-
-                        if (item->parent()->type() == Item::PairType)
-                            if (static_cast<Pair *>(item->parent())->value())
-                                item = item->parent()->parent();
-                            else
-                                item = item->parent();
-                        else
-                            item = item->parent();
-                    }
-                    else
-                        if (ignore_e)
-                            --ignore_e;
-                        else
-                            if (item->parent())
-                                if (item->parent()->type() == Item::PairType)
-                                {
-                                    if (info_hash_begin)
-                                    {
-                                        int level = 1;
-                                        Item *tmp = item->parent();
-
-                                        for (; tmp->parent(); tmp = tmp->parent(), ++level)
-                                            continue;
-
-                                        if (level == 2)
-                                        {
-                                            sha1_context ctx;
-
-                                            sha1_starts(&ctx);
-                                            sha1_update(&ctx, reinterpret_cast<const uint8 *>(info_hash_begin), p1 - info_hash_begin + 1);
-                                            sha1_finish(&ctx, reinterpret_cast<uint8 *>(info_hash));
-
-                                            info_hash_begin = NULL;
-                                        }
-                                    }
-
-                                    item = item->parent()->parent();
-                                }
-                                else if (item->parent()->type() == Item::ListType)
-                                    item = item->parent();
-                                else
-                                {
-                                    while (item->parent())
-                                        item = item->parent();
-
-                                    delete item;
-                                    return NULL;
-                                }
-
-                    ++p1;
-                    --len;
-                    break;
-                }
-
-                default:
-                {
-                    if (item == NULL)
-                        return NULL;
-
-                    switch (item->type())
-                    {
-                        case Item::DictionaryType:
-                        {
-                            EFC::ScopedPointer<Pair> pair(new (std::nothrow) Pair(item));
-
-                            if (UNLIKELY(pair.get() == NULL))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            if (UNLIKELY(static_cast<Dictionary *>(item)->add(pair.get()) == false))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            EFC::ScopedPointer<Item> key;
-                            pair2 = pair.release();
-
-                            if (*p1 == 'i')
-                            {
-                                p2 = ++p1;
-                                --len;
-                                key.reset(new (std::nothrow) Integer(pair2));
-                            }
-                            else if (*p1 >= '1' && *p1 <= '9')
-                            {
-                                p2 = p1++;
-                                --len;
-                                key.reset(new (std::nothrow) String(pair2));
-                            }
-
-                            if (UNLIKELY(key.get() == NULL))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            pair2->setKey(key.get());
-                            item = key.release();
-
-                            break;
-                        }
-
-                        case Item::ListType:
-                        {
-                            EFC::ScopedPointer<Item> value;
-
-                            if (*p1 == 'i')
-                            {
-                                p2 = ++p1;
-                                --len;
-                                value.reset(new (std::nothrow) Integer(item));
-                            }
-                            else if (*p1 >= '1' && *p1 <= '9')
-                            {
-                                p2 = p1++;
-                                --len;
-                                value.reset(new (std::nothrow) String(item));
-                            }
-
-                            if (UNLIKELY(value.get() == NULL))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            if (UNLIKELY(static_cast<List *>(item)->add(value.get()) == false))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            item = value.release();
-
-                            break;
-                        }
-
-                        case Item::PairType:
-                        {
-                            EFC::ScopedPointer<Item> value;
-
-                            if (*p1 == 'i')
-                            {
-                                p2 = ++p1;
-                                --len;
-                                value.reset(new (std::nothrow) Integer(item));
-                            }
-                            else if (*p1 >= '1' && *p1 <= '9')
-                            {
-                                p2 = p1++;
-                                --len;
-                                value.reset(new (std::nothrow) String(item));
-                            }
-
-                            if (UNLIKELY(value.get() == NULL))
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            static_cast<Pair *>(item)->setValue(value.get());
-                            item = value.release();
-
-                            break;
-                        }
-
-                        case Item::StringType:
-                        {
-                            if (*p1 == ':')
-                            {
-                                *p1++ = 0;
-                                --len;
-                                static_cast<String *>(item)->setValue(p1, str_len = atoi(p2));
-                                p1 += str_len;
-                                len -= str_len;
-
-                                if (item->parent()->type() == Item::PairType)
-                                    if (static_cast<Pair *>(item->parent())->value())
-                                        item = item->parent()->parent();
-                                    else
-                                    {
-                                        if (::strcmp(static_cast<String *>(item)->value().c_str(), "info") == 0)
-                                        {
-                                            int level = 1;
-                                            Item *tmp = item->parent();
-
-                                            for (; tmp->parent(); tmp = tmp->parent(), ++level)
-                                                continue;
-
-                                            if (level == 2)
-                                                info_hash_begin = p1;
-                                        }
-
-                                        item = item->parent();
-                                    }
-                                else
-                                    item = item->parent();
-                            }
-                            else if (*p1 >= '0' && *p1 <= '9')
-                            {
-                                ++p1;
-                                --len;
-                            }
-                            else
-                            {
-                                while (item->parent())
-                                    item = item->parent();
-
-                                delete item;
-                                return NULL;
-                            }
-
-                            break;
-                        }
-
-                        case Item::IntegerType:
-                        {
-                            if (LIKELY(p2 != p1))
-                            {
-                                if (*p1 < '0' || *p1 > '9')
-                                {
-                                    while (item->parent())
-                                        item = item->parent();
-
-                                    delete item;
-                                    return NULL;
-                                }
-                            }
-                            else
-                                if (*p1 != '-' && (*p1 < '1' || *p1 > '9') && (len < 2 || *p1 != '0' || p1[1] != 'e'))
-                                {
-                                    while (item->parent())
-                                        item = item->parent();
-
-                                    delete item;
-                                    return NULL;
-                                }
-                                else
-                                    static_cast<Integer *>(item)->setSign(*p1 == '-' ? -1 : 1);
-
-                            ++p1;
-                            --len;
-                            break;
-                        }
-
-                        default:
-                        {
-                            while (item->parent())
-                                item = item->parent();
-
-                            delete item;
-                            return NULL;
-                        }
-                    }
-
-                    break;
-                }
-            }
-
-        return item;
-    }
-
-    static void test(Item *item, int pad)
-    {
-        for (int i = 0; i < pad; ++i)
-            ::printf("\t");
-
-        if (item->type() == Item::DictionaryType || item->type() == Item::ListType)
-        {
-            for (auto i = static_cast<List *>(item)->items().begin(), end = static_cast<List *>(item)->items().end(); i != end; ++i)
-                test(i->get(), pad + 1);
-        }
-        else if (item->type() == Item::PairType)
-        {
-            if (static_cast<Pair *>(item)->key()->type() == Item::StringType)
-                ::printf("%s:", static_cast<const String *>(static_cast<Pair *>(item)->key())->value().c_str());
-            else
-                ::printf("%ld:", static_cast<const Integer *>(static_cast<Pair *>(item)->key())->value());
-
-            if (static_cast<Pair *>(item)->value()->type() == Item::StringType)
-                ::printf("%s\n", static_cast<const String *>(static_cast<Pair *>(item)->value())->value().c_str());
-            else if (static_cast<Pair *>(item)->value()->type() == Item::IntegerType)
-                ::printf("%ld\n", static_cast<const Integer *>(static_cast<Pair *>(item)->value())->value());
-            else if (static_cast<Pair *>(item)->value()->type() == Item::DictionaryType ||
-                     static_cast<Pair *>(item)->value()->type() == Item::ListType)
-            {
-                ::printf("[\n");
-
-                for (auto i = static_cast<const List *>(static_cast<Pair *>(item)->value())->items().begin(), end = static_cast<const List *>(static_cast<Pair *>(item)->value())->items().end(); i != end; ++i)
-                    test(i->get(), pad + 1);
-
-                for (int i = 0; i < pad; ++i)
-                    ::printf("\t");
-
-                ::printf("]\n");
-            }
-        }
-        else if (item->type() == Item::StringType)
-            ::printf("%s\n", static_cast<const String *>(item)->value().c_str());
-        else if (item->type() == Item::IntegerType)
-            ::printf("%ld\n", static_cast<const Integer *>(item)->value());
-    }
-
-
     class Entry : public Implements<IEntry, IProperties>
     {
     public:
-        Entry(const char *location, off64_t size, time_t ctime) :
+        Entry(const char *location, off64_t size, time_t ctime, const Interface::Holder &torrent) :
             m_location(::strdup(location)),
             m_title(::strrchr(m_location, '/') + 1),
             m_size(size),
-            m_ctime(ctime)
+            m_ctime(ctime),
+            m_torrent(torrent)
         {
             m_type = Module::desktop().typeOfFile(m_title);
         }
@@ -636,7 +60,11 @@ namespace {
         virtual const char *schema() const { return "file"; }
         virtual const char *location() const { return m_location; }
         virtual const IType *type() const { return m_type; }
-        virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const { return Interface::Holder(); }
+        virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const
+        {
+            Error error;
+            return Stream::open(m_torrent->announce(), m_torrent->hash(), m_torrent->size(), error);
+        }
 
     public: /* IProperties */
         virtual off64_t size() const { return m_size; }
@@ -651,6 +79,7 @@ namespace {
         off64_t m_size;
         time_t m_ctime;
         Interface::Adaptor<IType> m_type;
+        Interface::Adaptor<ITorrent> m_torrent;
     };
 
     class Dir : public Implements<IEntry, IDirectory>
@@ -711,8 +140,10 @@ namespace {
         time_t creation_date;
         EFC::String publisher;
         EFC::String publisher_url;
+        uint64_t total_length;
         Torrent::Files files;
         Torrent::Pieces pieces;
+        const Interface::Holder *torrent;
     };
 
     struct ProcessEntryState
@@ -720,7 +151,7 @@ namespace {
         GlobalState &global;
         time_t ctime;
         uint64_t length;
-        const String *pieces;
+        const Parser::String *pieces;
         const EFC::String *name;
         const uint64_t pieces_count;
         const uint64_t piece_length;
@@ -741,7 +172,7 @@ namespace {
                        "/%s", state.name->c_str()) >= sizeof(state.location) - strlen(state.location))
             return false;
 
-        entry.reset(new (std::nothrow) Entry(state.location, state.length, state.ctime));
+        entry.reset(new (std::nothrow) Entry(state.location, state.length, state.ctime, *state.global.torrent));
 
         if (UNLIKELY(entry.isValid() == false))
             return false;
@@ -779,37 +210,37 @@ namespace {
         return true;
     }
 
-    static bool processFiles(Torrent::Files *entries, const List *files, ProcessEntryState &state, const char *path_buf)
+    static bool processFiles(Torrent::Files *entries, const Parser::List *files, ProcessEntryState &state, const char *path_buf)
     {
         Interface::Holder entry;
         Torrent::Files *local_entries;
 
-        const Pair *pair;
-        const Integer *length;
-        const List *path;
-        const String *name;
+        const Parser::Pair *pair;
+        const Parser::Integer *length;
+        const Parser::List *path;
+        const Parser::String *name;
 
         for (auto i = files->items().begin(), end = files->items().end(); i != end; ++i)
-            if ((*i)->type() == Item::DictionaryType)
+            if ((*i)->type() == Parser::Item::DictionaryType)
             {
                 length = NULL;
                 path = NULL;
                 local_entries = entries;
                 ::strcpy(state.location, path_buf);
 
-                for (auto q = static_cast<const Dictionary *>((*i).get())->items().begin(),
-                          end = static_cast<const Dictionary *>((*i).get())->items().end();
+                for (auto q = static_cast<const Parser::Dictionary *>((*i).get())->items().begin(),
+                          end = static_cast<const Parser::Dictionary *>((*i).get())->items().end();
                      q != end; ++q)
                 {
-                    if ((*q)->type() == Item::PairType && (pair = static_cast<const Pair *>((*q).get()))->key()->type() == Item::StringType)
-                        if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "length") == 0)
-                            if (length == NULL && pair->value()->type() == Item::IntegerType)
-                                length = static_cast<const Integer *>(pair->value());
+                    if ((*q)->type() == Parser::Item::PairType && (pair = static_cast<const Parser::Pair *>((*q).get()))->key()->type() == Parser::Item::StringType)
+                        if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "length") == 0)
+                            if (length == NULL && pair->value()->type() == Parser::Item::IntegerType)
+                                length = static_cast<const Parser::Integer *>(pair->value());
                             else
                                 return false;
-                        else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "path") == 0)
-                            if (path == NULL && pair->value()->type() == Item::ListType)
-                                path = static_cast<const List *>(pair->value());
+                        else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "path") == 0)
+                            if (path == NULL && pair->value()->type() == Parser::Item::ListType)
+                                path = static_cast<const Parser::List *>(pair->value());
                             else
                                 return false;
                 }
@@ -826,9 +257,9 @@ namespace {
 
                     for (; current_file != end; ++current_file)
                     {
-                        name = static_cast<const String *>((*current_file).get());
+                        name = static_cast<const Parser::String *>((*current_file).get());
 
-                        if (name->type() != Item::StringType)
+                        if (name->type() != Parser::Item::StringType)
                             return false;
 
                         if (::snprintf(local_buf,
@@ -856,13 +287,14 @@ namespace {
                     }
                 }
 
-                name = static_cast<const String *>((*current_file).get());
+                name = static_cast<const Parser::String *>((*current_file).get());
 
-                if (name->type() != Item::StringType)
+                if (name->type() != Parser::Item::StringType)
                     return false;
 
                 state.name = &name->value();
                 state.length = length->value();
+                state.global.total_length += length->value();
 
                 if (!processEntry(local_entries, state))
                     return false;
@@ -873,95 +305,95 @@ namespace {
         return true;
     }
 
-    static bool processFile(GlobalState &global_state, const Dictionary *file)
+    static bool processFile(GlobalState &global_state, const Parser::Dictionary *file)
     {
-        const List *list;
-        const Pair *pair;
+        const Parser::List *list;
+        const Parser::Pair *pair;
 
-        const String *announce = NULL;
-        const String *comment = NULL;
-        const String *created_by = NULL;
-        const Integer *creation_date = NULL;
-        const String *publisher = NULL;
-        const String *publisher_url = NULL;
+        const Parser::String *announce = NULL;
+        const Parser::String *comment = NULL;
+        const Parser::String *created_by = NULL;
+        const Parser::Integer *creation_date = NULL;
+        const Parser::String *publisher = NULL;
+        const Parser::String *publisher_url = NULL;
 
-        const String *encoding = NULL;
-        const List *files = NULL;
-        const Integer *length = NULL;
-        const String *name = NULL;
-        const String *pieces = NULL;
-        const Integer *piece_length = NULL;
+        const Parser::String *encoding = NULL;
+        const Parser::List *files = NULL;
+        const Parser::Integer *length = NULL;
+        const Parser::String *name = NULL;
+        const Parser::String *pieces = NULL;
+        const Parser::Integer *piece_length = NULL;
 
         for (auto i = file->items().begin(), end = file->items().end(); i != end; ++i)
-            if ((*i)->type() == Item::PairType && (pair = static_cast<Pair *>((*i).get()))->key()->type() == Item::StringType)
-                if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "announce") == 0)
-                    if (announce == NULL && pair->value()->type() == Item::StringType)
-                        announce = static_cast<const String *>(pair->value());
+            if ((*i)->type() == Parser::Item::PairType && (pair = static_cast<Parser::Pair *>((*i).get()))->key()->type() == Parser::Item::StringType)
+                if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "announce") == 0)
+                    if (announce == NULL && pair->value()->type() == Parser::Item::StringType)
+                        announce = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "comment") == 0)
-                    if (comment == NULL && pair->value()->type() == Item::StringType)
-                        comment = static_cast<const String *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "comment") == 0)
+                    if (comment == NULL && pair->value()->type() == Parser::Item::StringType)
+                        comment = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "created by") == 0)
-                    if (created_by == NULL && pair->value()->type() == Item::StringType)
-                        created_by = static_cast<const String *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "created by") == 0)
+                    if (created_by == NULL && pair->value()->type() == Parser::Item::StringType)
+                        created_by = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "creation date") == 0)
-                    if (creation_date == NULL && pair->value()->type() == Item::IntegerType)
-                        creation_date = static_cast<const Integer *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "creation date") == 0)
+                    if (creation_date == NULL && pair->value()->type() == Parser::Item::IntegerType)
+                        creation_date = static_cast<const Parser::Integer *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "encoding") == 0)
-                    if (encoding == NULL && pair->value()->type() == Item::StringType)
-                        encoding = static_cast<const String *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "encoding") == 0)
+                    if (encoding == NULL && pair->value()->type() == Parser::Item::StringType)
+                        encoding = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "info") == 0)
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "info") == 0)
                 {
-                    if (pair->value()->type() != Item::DictionaryType || length != NULL || files != NULL || name != NULL)
+                    if (pair->value()->type() != Parser::Item::DictionaryType || length != NULL || files != NULL || name != NULL)
                         return false;
 
-                    list = static_cast<const Dictionary *>(pair->value());
+                    list = static_cast<const Parser::Dictionary *>(pair->value());
 
                     for (auto i = list->items().begin(), end = list->items().end(); i != end; ++i)
-                        if ((*i)->type() == Item::PairType && (pair = static_cast<Pair *>((*i).get()))->key()->type() == Item::StringType)
-                            if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "files") == 0)
-                                if (files == NULL && pair->value()->type() == Item::ListType)
-                                    files = static_cast<const List *>(pair->value());
+                        if ((*i)->type() == Parser::Item::PairType && (pair = static_cast<Parser::Pair *>((*i).get()))->key()->type() == Parser::Item::StringType)
+                            if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "files") == 0)
+                                if (files == NULL && pair->value()->type() == Parser::Item::ListType)
+                                    files = static_cast<const Parser::List *>(pair->value());
                                 else
                                     return false;
-                            else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "name") == 0)
-                                if (name == NULL && pair->value()->type() == Item::StringType)
-                                    name = static_cast<const String *>(pair->value());
+                            else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "name") == 0)
+                                if (name == NULL && pair->value()->type() == Parser::Item::StringType)
+                                    name = static_cast<const Parser::String *>(pair->value());
                                 else
                                     return false;
-                            else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "piece length") == 0)
-                                if (piece_length == NULL && pair->value()->type() == Item::IntegerType)
-                                    piece_length = static_cast<const Integer *>(pair->value());
+                            else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "piece length") == 0)
+                                if (piece_length == NULL && pair->value()->type() == Parser::Item::IntegerType)
+                                    piece_length = static_cast<const Parser::Integer *>(pair->value());
                                 else
                                     return false;
-                            else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "pieces") == 0)
-                                if (pieces == NULL && pair->value()->type() == Item::StringType)
-                                    pieces = static_cast<const String *>(pair->value());
+                            else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "pieces") == 0)
+                                if (pieces == NULL && pair->value()->type() == Parser::Item::StringType)
+                                    pieces = static_cast<const Parser::String *>(pair->value());
                                 else
                                     return false;
-                            else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "length") == 0)
-                                if (length == NULL && pair->value()->type() == Item::IntegerType)
-                                    length = static_cast<const Integer *>(pair->value());
+                            else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "length") == 0)
+                                if (length == NULL && pair->value()->type() == Parser::Item::IntegerType)
+                                    length = static_cast<const Parser::Integer *>(pair->value());
                                 else
                                     return false;
                 }
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "publisher") == 0)
-                    if (publisher == NULL && pair->value()->type() == Item::StringType)
-                        publisher = static_cast<const String *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "publisher") == 0)
+                    if (publisher == NULL && pair->value()->type() == Parser::Item::StringType)
+                        publisher = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
-                else if (::strcmp(static_cast<const String *>(pair->key())->value().c_str(), "publisher-url") == 0)
-                    if (publisher_url == NULL && pair->value()->type() == Item::StringType)
-                        publisher_url = static_cast<const String *>(pair->value());
+                else if (::strcmp(static_cast<const Parser::String *>(pair->key())->value().c_str(), "publisher-url") == 0)
+                    if (publisher_url == NULL && pair->value()->type() == Parser::Item::StringType)
+                        publisher_url = static_cast<const Parser::String *>(pair->value());
                     else
                         return false;
 
@@ -1074,21 +506,30 @@ Interface::Holder Torrent::fromFile(const Interface::Holder &file, Error &error)
 
             if (LIKELY(buffer != NULL))
             {
-                char info_hash[Torrent::SizeOfHash];
-                EFC::ScopedPointer<Item> item;
+                Parser parser;
 
                 if (fp->as<IStream>()->read(buffer, len) == len)
-                    item.reset(parseBencode(buffer, len, info_hash));
+                    parser.parse(buffer, len);
 
                 delete [] buffer;
 
-                if (item != NULL && item->type() == Item::DictionaryType)
+                if (parser.isValid())
                 {
+                    Interface::Holder torrent(new (std::nothrow) Torrent(parser.infoHash()));
+
+                    if (UNLIKELY(torrent.isValid() == false))
+                        return Interface::Holder();
+
                     GlobalState state;
                     state.cTime = prop->cTime();
+                    state.total_length = 0;
+                    state.torrent = &torrent;
 
-                    if (processFile(state, static_cast<Dictionary *>(item.get())))
-                        return Interface::Holder(new (std::nothrow) Torrent(&state, info_hash));
+                    if (!processFile(state, parser.root()))
+                        return Interface::Holder();
+
+                    torrent.as<Torrent>()->init(&state);
+                    return torrent;
                 }
             }
         }
@@ -1131,6 +572,11 @@ const char *Torrent::hash() const
     return m_info_hash;
 }
 
+uint64_t Torrent::size() const
+{
+    return m_size;
+}
+
 Torrent::const_iterator Torrent::begin() const
 {
     return std_iterator<Files>(m_files.begin());
@@ -1171,17 +617,24 @@ const Error &Torrent::lastError() const
     return m_lastError;
 }
 
-Torrent::Torrent(const void *state, const char hash[SizeOfHash]) :
-    m_announce(std::move(static_cast<const GlobalState *>(state)->announce)),
-    m_comment(std::move(static_cast<const GlobalState *>(state)->comment)),
-    m_created_by(std::move(static_cast<const GlobalState *>(state)->created_by)),
-    m_creation_date(std::move(static_cast<const GlobalState *>(state)->creation_date)),
-    m_publisher(std::move(static_cast<const GlobalState *>(state)->publisher)),
-    m_publisher_url(std::move(static_cast<const GlobalState *>(state)->publisher_url)),
-    m_files(std::move(static_cast<const GlobalState *>(state)->files)),
-    m_pieces(std::move(static_cast<const GlobalState *>(state)->pieces))
+Torrent::Torrent(const char hash[SizeOfHash]) :
+    m_creation_date(0),
+    m_size(0)
 {
     ::memcpy(m_info_hash, hash, SizeOfHash);
+}
+
+void Torrent::init(const void *state)
+{
+    m_announce = std::move(static_cast<const GlobalState *>(state)->announce);
+    m_comment = std::move(static_cast<const GlobalState *>(state)->comment);
+    m_created_by = std::move(static_cast<const GlobalState *>(state)->created_by);
+    m_creation_date = std::move(static_cast<const GlobalState *>(state)->creation_date);
+    m_publisher = std::move(static_cast<const GlobalState *>(state)->publisher);
+    m_publisher_url = std::move(static_cast<const GlobalState *>(state)->publisher_url);
+    m_size = std::move(static_cast<const GlobalState *>(state)->total_length);
+    m_files = std::move(static_cast<const GlobalState *>(state)->files);
+    m_pieces = std::move(static_cast<const GlobalState *>(state)->pieces);
 }
 
 }}

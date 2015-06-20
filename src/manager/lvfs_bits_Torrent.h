@@ -65,6 +65,7 @@ public: /* ITorrent */
     virtual const char *publisher() const;
     virtual const char *publisherUrl() const;
     virtual const char *hash() const;
+    virtual uint64_t size() const;
 
 public: /* IDirectory */
     virtual const_iterator begin() const;
@@ -80,7 +81,8 @@ public: /* IDirectory */
     virtual const Error &lastError() const;
 
 private:
-    Torrent(const void *state, const char hash[SizeOfHash]);
+    Torrent(const char hash[SizeOfHash]);
+    void init(const void *state);
 
 private:
     EFC::String m_announce;
@@ -90,6 +92,7 @@ private:
     EFC::String m_publisher;
     EFC::String m_publisher_url;
     char m_info_hash[SizeOfHash];
+    uint64_t m_size;
     Files m_files;
     Pieces m_pieces;
     Error m_lastError;
