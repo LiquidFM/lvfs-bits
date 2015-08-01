@@ -20,6 +20,8 @@
 #ifndef LVFS_BITS_TORRENTFILE_H_
 #define LVFS_BITS_TORRENTFILE_H_
 
+#include <efc/Map>
+#include <efc/String>
 #include <lvfs/IDirectory>
 
 
@@ -28,6 +30,9 @@ namespace BitS {
 
 class PLATFORM_MAKE_PRIVATE TorrentFile : public ExtendsBy<IDirectory>
 {
+public:
+    typedef EFC::Map<EFC::String, Interface::Holder> Files;
+
 public:
     TorrentFile(const Interface::Holder &file);
     virtual ~TorrentFile();
@@ -46,7 +51,7 @@ public: /* IDirectory */
     virtual const Error &lastError() const;
 
 private:
-    mutable Interface::Adaptor<IDirectory> m_torrent;
+    mutable Files m_files;
     mutable Error m_lastError;
 };
 

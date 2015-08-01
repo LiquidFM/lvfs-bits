@@ -18,7 +18,7 @@
  */
 
 #include "lvfs_bits_Plugin.h"
-#include "manager/lvfs_bits_TorrentFile.h"
+#include "lvfs_bits_TorrentFile.h"
 
 
 namespace LVFS {
