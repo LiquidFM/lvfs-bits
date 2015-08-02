@@ -102,11 +102,17 @@ namespace {
                             ::usleep(PokeTimeout * 1000);
 
                             if ((time_left -= PokeTimeout) == 0)
-                                return m_pos += size - left_to_read;
+                            {
+                                m_pos += size -= left_to_read;
+                                return size;
+                            }
                         }
                         while (!m_torrent.have_piece(piece));
                     else
-                        return m_pos += size - left_to_read;
+                    {
+                        m_pos += size -= left_to_read;
+                        return size;
+                    }
 
                 m_torrent.read_piece(piece);
 
@@ -117,7 +123,10 @@ namespace {
                             if (time_left > 0)
                                 time_left -= PokeTimeout;
                             else
-                                return m_pos += size - left_to_read;
+                            {
+                                m_pos += size -= left_to_read;
+                                return size;
+                            }
                         while (!m_session.wait_for_alert(milliseconds(PokeTimeout)));
 
                     m_session.pop_alerts(&alerts);
@@ -163,7 +172,10 @@ namespace {
                         }
 
                         if (done)
-                            return m_pos += size;
+                        {
+                            m_pos += size;
+                            return size;
+                        }
                         else
                             alerts.clear();
                     }
@@ -185,7 +197,49 @@ namespace {
 
         virtual bool seek(off64_t offset, Whence whence)
         {
-            return false;
+            switch (whence)
+            {
+                case FromBeginning:
+                {
+                    off64_t pos = offset;
+
+                    if (pos < 0 || pos > m_torrent.torrent_file()->file_at(m_index).size)
+                        return false;
+                    else
+                        m_pos = pos;
+
+                    break;
+                }
+
+                case FromCurrent:
+                {
+                    off64_t pos = m_pos + offset;
+
+                    if (pos < 0 || pos > m_torrent.torrent_file()->file_at(m_index).size)
+                        return false;
+                    else
+                        m_pos = pos;
+
+                    break;
+                }
+
+                case FromEnd:
+                {
+                    off64_t pos = m_torrent.torrent_file()->file_at(m_index).size - offset;
+
+                    if (pos < 0 || pos > m_torrent.torrent_file()->file_at(m_index).size)
+                        return false;
+                    else
+                        m_pos = pos;
+
+                    break;
+                }
+
+                default:
+                    return false;
+            }
+
+            return true;
         }
 
         virtual bool flush()
