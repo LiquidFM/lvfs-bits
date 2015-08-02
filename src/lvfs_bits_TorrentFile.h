@@ -23,6 +23,7 @@
 #include <efc/Map>
 #include <efc/String>
 #include <lvfs/IDirectory>
+#include <libtorrent/session.hpp>
 
 
 namespace LVFS {
@@ -53,6 +54,7 @@ public: /* IDirectory */
 private:
     mutable Files m_files;
     mutable Error m_lastError;
+    mutable libtorrent::session m_session;
 };
 
 }}

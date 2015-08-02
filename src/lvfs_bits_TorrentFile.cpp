@@ -28,6 +28,7 @@
 #include <brolly/assert.h>
 
 #include <libtorrent/lazy_entry.hpp>
+#include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
@@ -39,15 +40,212 @@ namespace LVFS {
 namespace BitS {
 
 namespace {
+    class Stream : public Implements<IStream>
+    {
+    public:
+        enum
+        {
+            PokeTimeout = 100,
+            FillBufferTimeout = 1 * 60 * 1000
+        };
+
+    public:
+        Stream(int index, const boost::intrusive_ptr<libtorrent::torrent_info> &ti, libtorrent::session &session) :
+            m_index(index),
+            m_pos(0),
+            m_session(session)
+        {
+            using namespace libtorrent;
+            error_code ec;
+            add_torrent_params p;
+
+            p.save_path = "/tmp";
+            p.ti = ti;
+
+            libtorrent::torrent_handle h = m_session.add_torrent(p, ec);
+
+            if (ec)
+                return;
+
+            m_torrent = std::move(h);
+
+            readAhead();
+        }
+
+        virtual ~Stream()
+        {
+            m_torrent.clear_piece_deadlines();
+        }
+
+        bool isValid() const { return m_torrent.is_valid(); }
+
+    public: /* IStream */
+        virtual size_t read(void *buffer, size_t size)
+        {
+            using namespace libtorrent;
+
+            const peer_request request = m_torrent.torrent_file()->map_file(m_index, m_pos, m_torrent.torrent_file()->file_at(m_index).size - m_pos);
+            const size_t piece_length = m_torrent.torrent_file()->piece_length();
+            uint32_t time_left = FillBufferTimeout;
+            std::deque<alert *> alerts;
+            int piece = request.piece;
+            bool done;
+
+            size = request.length > size ? size : request.length;
+
+            for (size_t left_to_read = size; left_to_read > 0;)
+            {
+                if (!m_torrent.have_piece(piece))
+                    if (time_left > 0)
+                        do
+                        {
+                            ::usleep(PokeTimeout * 1000);
+
+                            if ((time_left -= PokeTimeout) == 0)
+                                return m_pos += size - left_to_read;
+                        }
+                        while (!m_torrent.have_piece(piece));
+                    else
+                        return m_pos += size - left_to_read;
+
+                m_torrent.read_piece(piece);
+
+                for (done = false; !done;)
+                {
+                    if (!m_session.wait_for_alert(milliseconds(PokeTimeout)))
+                        do
+                            if (time_left > 0)
+                                time_left -= PokeTimeout;
+                            else
+                                return m_pos += size - left_to_read;
+                        while (!m_session.wait_for_alert(milliseconds(PokeTimeout)));
+
+                    m_session.pop_alerts(&alerts);
+
+                    if (left_to_read > piece_length)
+                    {
+                        for (alert *a : alerts)
+                        {
+                            if (const read_piece_alert *read_alert = alert_cast<read_piece_alert>(a))
+                            {
+                                ASSERT(read_alert->piece == piece);
+
+                                ::memcpy(static_cast<char *>(buffer) + size - left_to_read,
+                                         read_alert->buffer.get() + (read_alert->piece == request.piece ? request.start : 0),
+                                         read_alert->piece == request.piece ? read_alert->size - request.start : read_alert->size);
+
+                                ++piece;
+                                left_to_read -= piece_length;
+                                done = true;
+                            }
+
+                            delete a;
+                        }
+
+                        alerts.clear();
+                    }
+                    else
+                    {
+                        for (alert *a : alerts)
+                        {
+                            if (const read_piece_alert *read_alert = alert_cast<read_piece_alert>(a))
+                            {
+                                ASSERT(read_alert->piece == piece);
+
+                                ::memcpy(static_cast<char *>(buffer) + size - left_to_read,
+                                         read_alert->buffer.get() + (read_alert->piece == request.piece ? request.start : 0),
+                                         left_to_read);
+
+                                done = true;
+                            }
+
+                            delete a;
+                        }
+
+                        if (done)
+                            return m_pos += size;
+                        else
+                            alerts.clear();
+                    }
+                }
+            }
+
+            return 0;
+        }
+
+        virtual size_t write(const void *buffer, size_t size)
+        {
+            return 0;
+        }
+
+        virtual bool advise(off64_t offset, off64_t len, Advise advise)
+        {
+            return false;
+        }
+
+        virtual bool seek(off64_t offset, Whence whence)
+        {
+            return false;
+        }
+
+        virtual bool flush()
+        {
+            return false;
+        }
+
+        virtual const Error &lastError() const
+        {
+            return m_lastError;
+        }
+
+    private:
+        void readAhead()
+        {
+            using namespace libtorrent;
+
+            peer_request request = m_torrent.torrent_file()->map_file(m_index, m_pos, m_torrent.torrent_file()->file_at(m_index).size - m_pos);
+            const size_t piece_length = m_torrent.torrent_file()->piece_length();
+            int piece = request.piece;
+            int deadline = PokeTimeout;
+
+            m_torrent.clear_piece_deadlines();
+
+            for (; request.length > 0;)
+                if (request.length > piece_length)
+                {
+                    m_torrent.set_piece_deadline(piece++, deadline++);
+                    request.length -= piece_length;
+                }
+                else
+                {
+                    m_torrent.set_piece_deadline(piece, deadline);
+                    break;
+                }
+        }
+
+    private:
+        int m_index;
+        off64_t m_pos;
+        mutable Error m_lastError;
+        libtorrent::session &m_session;
+        libtorrent::torrent_handle m_torrent;
+    };
+
 
     class Entry : public Implements<IEntry, IProperties>
     {
     public:
-        Entry(const char *location, off64_t size, time_t ctime, int index, const boost::intrusive_ptr<libtorrent::torrent_info> &ti) :
+        Entry(const char *location,
+              off64_t size,
+              time_t ctime,
+              int index,
+              const boost::intrusive_ptr<libtorrent::torrent_info> &ti,
+              libtorrent::session &session) :
             m_location(::strdup(location)),
             m_title(::strrchr(m_location, '/') + 1),
             m_size(size),
             m_ctime(ctime),
+            m_session(session),
             m_index(index),
             m_ti(ti)
         {
@@ -64,8 +262,14 @@ namespace {
         virtual const char *schema() const { return "file"; }
         virtual const char *location() const { return m_location; }
         virtual const IType *type() const { return m_type; }
-        virtual Interface::Holder open(IStream::Mode mode = IStream::Read) const
+        virtual Interface::Holder open(IStream::Mode mode) const
         {
+            Interface::Holder res(new (std::nothrow) Stream(m_index, m_ti, m_session));
+
+            if (LIKELY(res.isValid() == true))
+                if (res.as<Stream>()->isValid())
+                    return res;
+
             return Interface::Holder();
         }
 
@@ -85,8 +289,10 @@ namespace {
 
     private:
         int m_index;
+        libtorrent::session &m_session;
         boost::intrusive_ptr<libtorrent::torrent_info> m_ti;
     };
+
 
     class Dir : public Implements<IEntry, IDirectory>
     {
@@ -142,8 +348,10 @@ namespace {
         time_t cTime;
         time_t creation_date;
         TorrentFile::Files files;
+        libtorrent::session *session;
         boost::intrusive_ptr<libtorrent::torrent_info> ti;
     };
+
 
     struct ProcessEntryState
     {
@@ -165,7 +373,7 @@ namespace {
         if (::snprintf(state.location + sizeof(state.location) - len, len, "/%s", state.name.c_str()) >= len)
             return false;
 
-        entry.reset(new (std::nothrow) Entry(state.location, state.length, state.ctime, state.index, state.global.ti));
+        entry.reset(new (std::nothrow) Entry(state.location, state.length, state.ctime, state.index++, state.global.ti, *state.global.session));
 
         if (UNLIKELY(entry.isValid() == false))
             return false;
@@ -177,6 +385,7 @@ namespace {
 
         return true;
     }
+
 
     static bool processFiles(TorrentFile::Files *entries, const libtorrent::lazy_entry &files, ProcessEntryState &state, const char *path_buf)
     {
@@ -236,6 +445,7 @@ namespace {
         return true;
     }
 
+
     static bool processFile(GlobalState &global_state, const libtorrent::lazy_entry &entry)
     {
         const libtorrent::lazy_entry *info = entry.dict_find("info");
@@ -280,7 +490,6 @@ namespace {
 
         return true;
     }
-
 }
 
 
@@ -313,9 +522,17 @@ TorrentFile::const_iterator TorrentFile::begin() const
 
                     if (libtorrent::lazy_bdecode(buffer.get(), buffer.get() + len, e, ec) == 0)
                     {
+                        libtorrent::error_code ec;
+
+                        m_session.listen_on(std::make_pair(50001, 50001), ec);
+
+                        if (ec)
+                            return std_iterator<Files>(m_files.begin());
+
                         GlobalState state;
 
                         state.cTime = prop->cTime();
+                        state.session = &m_session;
                         state.ti.reset(new (std::nothrow) libtorrent::torrent_info(e, ec));
 
                         if (UNLIKELY(state.ti.get() == NULL))
