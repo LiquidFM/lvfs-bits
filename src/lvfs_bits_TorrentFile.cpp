@@ -239,6 +239,7 @@ namespace {
                     return false;
             }
 
+            readAhead();
             return true;
         }
 
