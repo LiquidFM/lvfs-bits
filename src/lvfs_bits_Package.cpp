@@ -35,6 +35,11 @@ const char *Package::name() const
     return "BitS";
 }
 
+Settings::Scope *Package::settings() const
+{
+    return NULL;
+}
+
 const Package::Plugin **Package::contentPlugins() const
 {
     static const BitS::Plugin plugin;
