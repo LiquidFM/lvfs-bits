@@ -37,7 +37,7 @@ public:
     virtual ~Package();
 
     virtual const char *name() const;
-    virtual Settings::Scope *settings() const;
+    virtual Settings *settings() const;
     virtual const Plugin **contentPlugins() const;
     virtual const Plugin **protocolPlugins() const;
 };
