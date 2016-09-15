@@ -20,6 +20,8 @@
 #include "lvfs_bits_Plugin.h"
 #include "lvfs_bits_Package.h"
 
+#include <lvfs/plugins/Package>
+
 
 namespace LVFS {
 namespace BitS {
@@ -35,7 +37,7 @@ const char *Package::name() const
     return "BitS";
 }
 
-Package::Settings *Package::settings() const
+Settings::Scope *Package::settings() const
 {
     return NULL;
 }
@@ -66,4 +68,4 @@ const Package::Plugin **Package::protocolPlugins() const
 }}
 
 
-DECLARE_PLUGIN(::LVFS::BitS::Package)
+DECLARE_PLUGINS_PACKAGE(::LVFS::BitS::Package)

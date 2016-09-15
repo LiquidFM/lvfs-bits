@@ -1,7 +1,7 @@
 /**
  * This file is part of lvfs-bits.
  *
- * Copyright (C) 2011-2015 Dmitriy Vilkov, <dav.daemon@gmail.com>
+ * Copyright (C) 2011-2016 Dmitriy Vilkov, <dav.daemon@gmail.com>
  *
  * lvfs-bits is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,7 +30,6 @@
 #include <libtorrent/lazy_entry.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_info.hpp>
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include <cstring>
 #include <cstdio>
@@ -50,7 +49,7 @@ namespace {
         };
 
     public:
-        Stream(int index, const boost::intrusive_ptr<libtorrent::torrent_info> &ti, libtorrent::session &session) :
+        Stream(int index, const boost::shared_ptr<libtorrent::torrent_info> &ti, libtorrent::session &session) :
             m_index(index),
             m_pos(0),
             m_session(session)
@@ -294,7 +293,7 @@ namespace {
               off64_t size,
               time_t ctime,
               int index,
-              const boost::intrusive_ptr<libtorrent::torrent_info> &ti,
+              const boost::shared_ptr<libtorrent::torrent_info> &ti,
               libtorrent::session &session) :
             m_location(::strdup(location)),
             m_title(::strrchr(m_location, '/') + 1),
@@ -345,7 +344,7 @@ namespace {
     private:
         int m_index;
         libtorrent::session &m_session;
-        boost::intrusive_ptr<libtorrent::torrent_info> m_ti;
+        boost::shared_ptr<libtorrent::torrent_info> m_ti;
     };
 
 
@@ -404,7 +403,7 @@ namespace {
         time_t creation_date;
         TorrentFile::Files files;
         libtorrent::session *session;
-        boost::intrusive_ptr<libtorrent::torrent_info> ti;
+        boost::shared_ptr<libtorrent::torrent_info> ti;
     };
 
 

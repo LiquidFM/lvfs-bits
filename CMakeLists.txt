@@ -1,13 +1,15 @@
 project (lvfs-bits)
 
-# Project header
-project_library_header_default ()
+# Project header (FIXME: "STRICT_WARNINGS:NO" because of libtorrent)
+project_header_default ("POSITION_INDEPENDENT_CODE:YES" "STRICT_WARNINGS:NO")
 
 # 3rdparty
-list (APPEND ${PROJECT_NAME}_LIBS brolly)
-list (APPEND ${PROJECT_NAME}_LIBS efc)
-list (APPEND ${PROJECT_NAME}_LIBS lvfs)
-list (APPEND ${PROJECT_NAME}_LIBS torrent-rasterbar)
+list (APPEND ${PROJECT_NAME}_LIBS ${EFC_LIB})
+list (APPEND ${PROJECT_NAME}_LIBS ${LVFS_LIB})
+
+find_package (LibTorrent REQUIRED)
+include_directories (${LIBTORRENT_INCLUDE})
+list (APPEND ${PROJECT_NAME}_LIBS ${LIBTORRENT_LIBRARY})
 
 # Sources
 add_subdirectory (src)
@@ -16,11 +18,8 @@ add_subdirectory (src)
 add_library (lvfs-bits SHARED ${${PROJECT_NAME}_SOURCES})
 target_link_libraries (lvfs-bits ${${PROJECT_NAME}_LIBS})
 
-# Version
-build_version_file (lvfs-bits 0.0.1)
-
 # Documentation
-add_documentation ("LVFS-BitS" 0.0.1 "LVFS Plugin for BitTorrent protocol")
+add_documentation (lvfs-bits 0.0.1 "LVFS Plugin for BitTorrent protocol")
 
 # Install rules
 install_target (lvfs-bits)
